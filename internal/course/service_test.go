@@ -53,12 +53,7 @@ func TestRecordAttemptStoresMultipleAttemptsForSameLesson(t *testing.T) {
 		newAttempt(learnerID, "practice", 40),
 		newAttempt(learnerID, "practice", 0),
 	}
-
-	for _, attempt := range attempts {
-		if err := service.RecordAttempt(t.Context(), attempt); err != nil {
-			t.Fatalf("RecordAttempt(%+v) error = %v", attempt, err)
-		}
-	}
+	recordAll(t, service, attempts)
 
 	assertStored(t, repo, learnerID, attempts)
 }
@@ -92,6 +87,114 @@ func TestRecordAttemptDoesNotStoreRejectedAttempts(t *testing.T) {
 	}
 
 	assertStored(t, repo, learnerID, nil)
+}
+
+func TestProgressFromRecordedAttempts(t *testing.T) {
+	service, _ := newPostgresService(t)
+	learnerID := uniqueID("learner")
+	recordAll(t, service, []course.Attempt{
+		newAttempt(learnerID, "introduction", 60),
+		newAttempt(learnerID, "introduction", 30),
+		newAttempt(learnerID, "practice", 69),
+		newAttempt(learnerID, "challenge", 95),
+	})
+
+	got, err := service.Progress(t.Context(), learnerID, course.CourseID)
+	if err != nil {
+		t.Fatalf("Progress error = %v", err)
+	}
+
+	assertProgress(t, got, learnerID, progressWant{
+		lessons: map[string]lessonWant{
+			"introduction": scored(60, true),
+			"practice":     scored(69, false),
+			"challenge":    scored(95, true),
+		},
+		percent: 50,
+	})
+}
+
+func TestProgressIsolatesLearners(t *testing.T) {
+	service, _ := newPostgresService(t)
+	finisher, beginner := uniqueID("learner"), uniqueID("learner")
+	recordAll(t, service, []course.Attempt{
+		newAttempt(finisher, "introduction", 100),
+		newAttempt(beginner, "introduction", 20),
+		newAttempt(finisher, "practice", 100),
+	})
+
+	got, err := service.Progress(t.Context(), beginner, course.CourseID)
+	if err != nil {
+		t.Fatalf("Progress error = %v", err)
+	}
+
+	assertProgress(t, got, beginner, progressWant{lessons: map[string]lessonWant{
+		"introduction": scored(20, false), "practice": noAttempts, "challenge": noAttempts,
+	}})
+
+	got, err = service.Progress(t.Context(), finisher, course.CourseID)
+	if err != nil {
+		t.Fatalf("Progress error = %v", err)
+	}
+
+	assertProgress(t, got, finisher, progressWant{
+		lessons: map[string]lessonWant{
+			"introduction": scored(100, true), "practice": scored(100, true), "challenge": noAttempts,
+		},
+		percent:   100,
+		completed: true,
+	})
+}
+
+func TestProgressForLearnerWithoutAttempts(t *testing.T) {
+	service, _ := newPostgresService(t)
+	learnerID := uniqueID("learner")
+
+	got, err := service.Progress(t.Context(), learnerID, course.CourseID)
+	if err != nil {
+		t.Fatalf("Progress error = %v, want empty progress", err)
+	}
+
+	assertProgress(t, got, learnerID, progressWant{lessons: map[string]lessonWant{
+		"introduction": noAttempts, "practice": noAttempts, "challenge": noAttempts,
+	}})
+}
+
+func TestProgressRejectsInvalidRequests(t *testing.T) {
+	// Request validation happens before storage is accessed.
+	service := course.NewService(nil)
+
+	tests := []struct {
+		name      string
+		learnerID string
+		courseID  string
+		want      error
+	}{
+		{"blank learner", " ", course.CourseID, course.ErrInvalidInput},
+		{"unknown course", "learner-001", "course-002", course.ErrUnknownCourse},
+		{"course id is case-sensitive", "learner-001", "COURSE-001", course.ErrUnknownCourse},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := service.Progress(t.Context(), tt.learnerID, tt.courseID); !errors.Is(
+				err,
+				tt.want,
+			) {
+				t.Fatalf("Progress error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func recordAll(t *testing.T, service *course.Service, attempts []course.Attempt) {
+	t.Helper()
+
+	for _, attempt := range attempts {
+		if err := service.RecordAttempt(t.Context(), attempt); err != nil {
+			t.Fatalf("RecordAttempt(%+v) error = %v", attempt, err)
+		}
+	}
 }
 
 // newPostgresService uses the supplied connection configuration, so the database from setup
