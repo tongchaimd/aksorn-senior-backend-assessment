@@ -21,8 +21,8 @@ func (s *Service) RecordAttempt(ctx context.Context, attempt Attempt) error {
 	if err := ValidateAttempt(attempt); err != nil {
 		return err
 	}
-	// TODO(candidate 1): Store the accepted attempt using s.repo. Support multiple attempts.
-	return ErrNotImplemented
+
+	return s.repo.Add(ctx, attempt)
 }
 
 func (s *Service) Progress(ctx context.Context, learnerID, courseID string) (Progress, error) {
